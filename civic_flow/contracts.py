@@ -117,6 +117,86 @@ class ReportInput(AwareModel):
     @field_validator("group_by")
     @classmethod
     def grouping(cls, value: str) -> str:
-        if value not in {"district", "grid", "category", "department"}:
+        if value not in {"district", "grid", "category", "department", "problem"}:
             raise ValueError("Unsupported grouping")
         return value
+
+class ProblemInput(AwareModel):
+    """Open a governance problem, optionally grouping existing cases."""
+
+    title: str = Field(min_length=1, max_length=400)
+    grid_id: str = Field(min_length=1, max_length=80)
+    category: str = Field(min_length=1, max_length=80)
+    department: str | None = Field(default=None, max_length=80)
+    case_ids: list[int] = Field(default_factory=list, max_length=500)
+    occurred_at: datetime
+    actor: str = Field(default="analyst", min_length=1, max_length=80)
+    operation_key: str | None = Field(default=None, min_length=1, max_length=100)
+
+class ProblemCaseInput(AwareModel):
+    case_id: int = Field(ge=1)
+    occurred_at: datetime
+    expected_version: int = Field(ge=1)
+    actor: str = Field(min_length=1, max_length=80)
+    operation_key: str | None = Field(default=None, min_length=1, max_length=100)
+
+class AssociationInput(AwareModel):
+    """A hint, never an automatic merge: similar content across sources."""
+
+    case_id: int = Field(ge=1)
+    other_case_id: int = Field(ge=1)
+    reason: str = Field(default="similar_content", min_length=1, max_length=120)
+    similarity: float = Field(default=1.0, ge=0, le=1)
+    occurred_at: datetime
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    operation_key: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def distinct_pair(self):
+        if self.case_id == self.other_case_id:
+            raise ValueError("Association needs two distinct cases")
+        return self
+
+class AssociationScanInput(AwareModel):
+    occurred_at: datetime
+    grid_id: str | None = Field(default=None, max_length=80)
+    category: str | None = Field(default=None, max_length=80)
+    threshold: float = Field(default=0.5, ge=0, le=1)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+
+class AssociationResolveInput(AwareModel):
+    occurred_at: datetime
+    actor: str = Field(min_length=1, max_length=80)
+    expected_version: int = Field(ge=1)
+    problem_id: int | None = Field(default=None, ge=1)
+    operation_key: str | None = Field(default=None, min_length=1, max_length=100)
+
+class ProblemMergeInput(AwareModel):
+    into_problem_id: int = Field(ge=1)
+    occurred_at: datetime
+    actor: str = Field(min_length=1, max_length=80)
+    expected_version: int = Field(ge=1)
+    expected_target_version: int | None = Field(default=None, ge=1)
+    suggestion_id: int | None = Field(default=None, ge=1)
+    operation_key: str | None = Field(default=None, min_length=1, max_length=100)
+
+class ProblemSplitInput(AwareModel):
+    case_ids: list[int] = Field(min_length=1, max_length=500)
+    occurred_at: datetime
+    actor: str = Field(min_length=1, max_length=80)
+    expected_version: int = Field(ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=400)
+    department: str | None = Field(default=None, max_length=80)
+    operation_key: str | None = Field(default=None, min_length=1, max_length=100)
+    # Completed requests keep the record (and problem) they were handled
+    # under; only obligations that are still outstanding follow the split.
+    # An explicit override is possible when re-organising closed archives.
+    move_completed: bool = False
+
+class MergeUndoInput(AwareModel):
+    occurred_at: datetime
+    actor: str = Field(min_length=1, max_length=80)
+    operation_key: str | None = Field(default=None, min_length=1, max_length=100)
+    # Completed residents keep the problem they were handled under; their
+    # still-outstanding neighbours return to the pre-merge problem.
+    move_completed: bool = False

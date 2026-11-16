@@ -41,8 +41,15 @@ class BriefingService:
             signals.append({"code": "RESOLUTION_OVERDUE", "count": totals["resolution_overdue"]})
         if totals["open"] and not totals["responded"]:
             signals.append({"code": "NO_RESPONSE_YET", "count": totals["open"]})
+        if totals["unfulfilled_response"]:
+            signals.append({"code": "UNFULFILLED_RESPONSE_OBLIGATIONS",
+                            "count": totals["unfulfilled_response"]})
+        if totals["unfulfilled_resolution"]:
+            signals.append({"code": "UNFULFILLED_RESOLUTION_OBLIGATIONS",
+                            "count": totals["unfulfilled_resolution"]})
         return {"as_of": overview["as_of"], "district": district,
                 "watermark": overview["watermark"], "totals": totals,
+                "problems": overview.get("problems"),
                 "districts": overview["groups"], "pressure": pressure["groups"],
                 "aging": aging["buckets"], "unseen_categories": completeness["unseen_categories"],
                 "channels": channels["channels"], "signals": signals}

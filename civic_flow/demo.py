@@ -29,21 +29,27 @@ def run() -> dict:
             "response_hours": 48, "resolution_hours": 240}))
         batch = {"batch_key": "demo-001", "submitted_at": "2026-01-02T12:00:00Z", "cases": [
             {"external_id": "n-1", "grid_id": "g-1", "category": "lighting",
-             "summary": "Street lamp has failed", "occurred_at": "2026-01-01T08:00:00Z",
-             "resident_token": "synthetic-person-1", "priority": 1},
+             "summary": "Street lamp has failed outside the school",
+             "occurred_at": "2026-01-01T08:00:00Z",
+             "resident_token": "synthetic-person-1", "priority": 1, "source": "resident"},
+            {"external_id": "n-2", "grid_id": "g-1", "category": "lighting",
+             "summary": "Street lamp has failed outside the school gate",
+             "occurred_at": "2026-01-01T09:00:00Z",
+             "resident_token": "synthetic-person-3", "priority": 2, "source": "hotline"},
             {"external_id": "s-1", "grid_id": "g-2", "category": "fitness",
              "summary": "Outdoor exercise equipment is damaged",
              "occurred_at": "2026-01-01T09:00:00Z",
              "resident_token": "synthetic-person-2", "priority": 2},
         ]}
         imported = required(client.post("/batches", json=batch))
-        if imported["imported_count"] != 2:
+        if imported["imported_count"] != 3:
             raise RuntimeError("Synthetic batch count changed")
         again = required(client.post("/batches", json=batch))
         if not again["replayed"]:
             raise RuntimeError("Batch replay was not idempotent")
         items = required(client.get("/cases"))["items"]
         first = items[0]["case_id"]
+        second = items[1]["case_id"]
         event = {"event_key": "answer-1", "kind": "responded",
                  "occurred_at": "2026-01-02T08:00:00Z", "actor": "public_works",
                  "expected_version": 1, "note": "Repair team scheduled"}
@@ -57,11 +63,46 @@ def run() -> dict:
             "group_by": "district"}))
         after = required(client.post("/reports", json={
             "report_key": "after", "as_of": "2026-01-04T00:00:00Z",
-            "group_by": "district"}))
+            "group_by": "problem"}))
         if before["body"]["totals"]["closed"] != 0:
             raise RuntimeError("Historic snapshot contains future closure")
         if after["body"]["totals"]["closed"] != 1:
             raise RuntimeError("Closure missing from later snapshot")
+        # Similar content from independent sources is only a review hint.
+        scan = required(client.post("/associations/scan", json={
+            "occurred_at": "2026-01-02T09:00:00Z", "grid_id": "g-1"}))
+        if not scan["created"]:
+            raise RuntimeError("Cross-source similarity hint was not found")
+        hint = scan["created"][0]
+        before_confirm = required(client.get("/metrics", params={
+            "as_of": "2026-01-04T00:00:00Z", "group_by": "problem"}))
+        if before_confirm["problems"]["governance_problems"] != 0:
+            raise RuntimeError("Unconfirmed hint changed the problem count")
+        confirmed = required(client.post(f"/associations/{hint['suggestion_id']}/confirm",
+                                         json={"occurred_at": "2026-01-02T10:00:00Z",
+                                               "actor": "reviewer",
+                                               "expected_version": hint["version"]}))
+        problem_id = confirmed["problem"]["problem_id"]
+        grouped = required(client.get("/metrics", params={
+            "as_of": "2026-01-04T00:00:00Z", "group_by": "problem"}))
+        if grouped["problems"]["raw_cases"] != 3:
+            raise RuntimeError("Raw resident requests were collapsed")
+        if grouped["problems"]["governance_problems"] != 1:
+            raise RuntimeError("Confirmed association did not form one problem")
+        if grouped["problems"]["grouped_cases"] != 2:
+            raise RuntimeError("Confirmed association did not group two requests")
+        # Completed residents keep their records; outstanding work follows a split.
+        problem = required(client.get(f"/problems/{problem_id}"))
+        split = required(client.post(f"/problems/{problem_id}/split", json={
+            "case_ids": [first, second], "occurred_at": "2026-01-04T00:00:00Z",
+            "actor": "reviewer", "expected_version": problem["version"],
+            "title": "Second lamp"}))
+        if split["retained_completed_case_ids"] != [first]:
+            raise RuntimeError("Completed request was moved by the split")
+        if split["moved_case_ids"] != [second]:
+            raise RuntimeError("Outstanding request did not follow the split")
+        if required(client.get(f"/cases/{first}"))["status"] != "closed":
+            raise RuntimeError("Completed request record was altered")
         quality = required(client.get("/quality/inspect", params={
             "as_of": "2026-01-04T00:00:00Z"}))
         if quality["issue_count"]:
@@ -72,6 +113,10 @@ def run() -> dict:
         return {"accepted": imported["imported_count"],
                 "closed_as_of_later_report": after["body"]["totals"]["closed"],
                 "historic_closed": before["body"]["totals"]["closed"],
+                "raw_cases": grouped["problems"]["raw_cases"],
+                "governance_problems": grouped["problems"]["governance_problems"],
+                "grouped_cases": grouped["problems"]["grouped_cases"],
+                "retained_completed": len(split["retained_completed_case_ids"]),
                 "quality_issues": quality["issue_count"], "report_verified": check["matches"]}
 
 if __name__ == "__main__":

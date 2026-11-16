@@ -107,5 +107,80 @@ class RecoveryTests(unittest.TestCase):
             "as_of": "2026-05-03T00:00:00Z"}).json()
         self.assertEqual(result["issue_count"], 0)
 
+    def problem_batch(self):
+        self.assertEqual(self.client.post("/batches", json=self.batch).status_code, 200)
+        second = {**self.batch, "batch_key": "b2", "cases": [
+            {**self.batch["cases"][0], "external_id": "two", "resident_token": "person-2",
+             "source": "hotline", "summary": "Synthetic repair ticket near the school"}]}
+        self.assertEqual(self.client.post("/batches", json=second).status_code, 200)
+        return [item["case_id"] for item in self.client.get("/cases").json()["items"]]
+
+    def open_problem(self, case_ids):
+        return self.client.post("/problems", json={
+            "title": "Shared repair", "grid_id": "g", "category": "repair",
+            "case_ids": case_ids, "occurred_at": "2026-05-02T01:00:00Z",
+            "operation_key": "problem-1"}).json()
+
+    def test_concurrent_identical_problem_open_creates_one_problem(self):
+        ids = self.problem_batch()
+        def submit(_):
+            with TestClient(create_app(self.path)) as other:
+                response = other.post("/problems", json={
+                    "title": "Shared repair", "grid_id": "g", "category": "repair",
+                    "case_ids": ids, "occurred_at": "2026-05-02T01:00:00Z",
+                    "operation_key": "problem-1"})
+                return response.status_code, response.json()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(submit, range(4)))
+        self.assertEqual([status for status, _ in results], [200] * 4)
+        self.assertEqual(len({data["problem_id"] for _, data in results}), 1)
+        self.assertEqual(self.client.get("/problems").json()["items"][0]["member_count"], 2)
+
+    def test_concurrent_confirm_of_same_hint_forms_one_problem(self):
+        ids = self.problem_batch()
+        hint = self.client.post("/associations", json={
+            "case_id": ids[0], "other_case_id": ids[1],
+            "occurred_at": "2026-05-02T01:00:00Z"}).json()
+        def submit(_):
+            with TestClient(create_app(self.path)) as other:
+                response = other.post(
+                    f"/associations/{hint['suggestion_id']}/confirm",
+                    json={"occurred_at": "2026-05-02T02:00:00Z", "actor": "reviewer",
+                          "expected_version": 1})
+                return response.status_code, response.json()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(submit, range(2)))
+        self.assertEqual(sorted(status for status, _ in results), [200, 409])
+        metrics = self.client.get("/metrics", params={
+            "as_of": "2026-05-04T00:00:00Z", "group_by": "problem"}).json()
+        self.assertEqual(metrics["problems"]["governance_problems"], 1)
+        self.assertEqual(metrics["problems"]["grouped_cases"], 2)
+
+    def test_split_survives_reopen_with_membership_intervals(self):
+        ids = self.problem_batch()
+        problem = self.open_problem(ids)
+        split = self.client.post(f"/problems/{problem['problem_id']}/split", json={
+            "case_ids": [ids[1]], "occurred_at": "2026-05-02T03:00:00Z",
+            "actor": "reviewer", "expected_version": problem["version"]}).json()
+        with TestClient(create_app(self.path)) as later:
+            source = later.get(f"/problems/{problem['problem_id']}").json()
+            moved = later.get(f"/problems/{split['problem']['problem_id']}").json()
+            self.assertEqual(source["case_ids"], [ids[0]])
+            self.assertEqual(moved["case_ids"], [ids[1]])
+            historic = later.get(f"/problems/{problem['problem_id']}", params={
+                "as_of": "2026-05-02T02:00:00Z"}).json()
+            self.assertEqual(historic["case_ids"], ids)
+
+    def test_membership_watermark_is_stable_across_restart(self):
+        ids = self.problem_batch()
+        self.open_problem(ids)
+        frozen = self.client.get("/metrics", params={
+            "as_of": "2026-05-04T00:00:00Z", "group_by": "problem"}).json()
+        with TestClient(create_app(self.path)) as later:
+            replay = later.get("/metrics", params={
+                "as_of": "2026-05-04T00:00:00Z", "group_by": "problem",
+                "watermark": frozen["watermark"]}).json()
+            self.assertEqual(replay, frozen)
+
 if __name__ == "__main__":
     unittest.main()

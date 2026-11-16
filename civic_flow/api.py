@@ -9,8 +9,11 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from .cases import CaseService
-from .contracts import (BatchInput, DomainError, EventInput, GridInput,
-                        ReportInput, RouteRuleInput)
+from .contracts import (AssociationInput, AssociationResolveInput,
+                        AssociationScanInput, BatchInput, DomainError, EventInput,
+                        GridInput, MergeUndoInput, ProblemCaseInput, ProblemInput,
+                        ProblemMergeInput, ProblemSplitInput, ReportInput,
+                        RouteRuleInput)
 from .ingest import IntakeService
 from .metrics import MetricsService
 from .quality import QualityService
@@ -19,6 +22,7 @@ from .operations import OperationsService
 from .diagnostics import DiagnosticsService
 from .catalog import CatalogService
 from .briefing import BriefingService
+from .problems import ProblemService
 from .screening import ScreeningService
 from .reports import ReportService
 from .routing import RoutingService
@@ -38,6 +42,7 @@ def create_app(path: str | Path | None = None) -> FastAPI:
     diagnostics = DiagnosticsService(store)
     catalog = CatalogService(store)
     briefing = BriefingService(store)
+    problems = ProblemService(store)
     screening = ScreeningService(store)
     app = FastAPI(title="Civic Flow", version="1.0.0")
     app.state.store = store
@@ -122,15 +127,73 @@ def create_app(path: str | Path | None = None) -> FastAPI:
     def case_at(case_id: int, as_of: datetime):
         return metrics.case_at(case_id, as_of)
 
+    @app.post("/problems")
+    def open_problem(body: ProblemInput):
+        return problems.open(body)
+
+    @app.get("/problems")
+    def list_problems(status: str | None = None, after: int = 0, limit: int = 50):
+        return problems.list(status, after, limit)
+
+    @app.get("/problems/{problem_id}")
+    def get_problem(problem_id: int, as_of: datetime | None = None, history: bool = False):
+        return problems.get(problem_id, as_of=as_of, history=history)
+
+    @app.get("/problems/{problem_id}/cases")
+    def problem_cases(problem_id: int, as_of: datetime | None = None):
+        return problems.cases(problem_id, as_of=as_of)
+
+    @app.get("/problems/{problem_id}/history")
+    def problem_history(problem_id: int):
+        return problems.history(problem_id)
+
+    @app.post("/problems/{problem_id}/cases")
+    def attach_problem_case(problem_id: int, body: ProblemCaseInput):
+        return problems.attach(problem_id, body)
+
+    @app.post("/problems/{problem_id}/split")
+    def split_problem(problem_id: int, body: ProblemSplitInput):
+        return problems.split(problem_id, body)
+
+    @app.post("/problems/{problem_id}/merge")
+    def merge_problem(problem_id: int, body: ProblemMergeInput):
+        return problems.merge(problem_id, body)
+
+    @app.post("/merges/{merge_id}/undo")
+    def undo_merge(merge_id: int, body: MergeUndoInput):
+        return problems.undo_merge(merge_id, body)
+
+    @app.post("/associations")
+    def suggest_association(body: AssociationInput):
+        return problems.suggest(body)
+
+    @app.post("/associations/scan")
+    def scan_associations(body: AssociationScanInput):
+        return problems.scan(body)
+
+    @app.get("/associations")
+    def list_associations(status: str | None = None, after: int = 0, limit: int = 50):
+        return problems.suggestions(status, after, limit)
+
+    @app.post("/associations/{suggestion_id}/confirm")
+    def confirm_association(suggestion_id: int, body: AssociationResolveInput):
+        return problems.resolve(suggestion_id, body)
+
+    @app.post("/associations/{suggestion_id}/reject")
+    def reject_association(suggestion_id: int, body: AssociationResolveInput):
+        return problems.reject(suggestion_id, body)
+
     @app.get("/audit")
     def audit(after: int = 0, limit: int = 100):
         return cases.audit(after, limit)
 
     @app.get("/metrics")
     def metric_preview(as_of: datetime, group_by: str = "district", district: str | None = None,
-                       category: str | None = None, include_cases: bool = False):
+                       category: str | None = None, include_cases: bool = False,
+                       watermark: int | None = None):
         return metrics.preview(as_of=as_of, group_by=group_by, district=district,
-                               category=category, include_cases=include_cases)
+                               category=category, include_cases=include_cases,
+                               watermark=watermark)
 
     @app.post("/reports")
     def create_report(body: ReportInput):
@@ -147,6 +210,10 @@ def create_app(path: str | Path | None = None) -> FastAPI:
     @app.get("/reports/{key}/verify")
     def verify_report(key: str):
         return reports.verify(key)
+
+    @app.get("/reports/{key}/basis")
+    def report_basis(key: str):
+        return reports.basis(key)
 
     @app.get("/reports/{first}/compare/{second}")
     def compare_reports(first: str, second: str):
@@ -167,6 +234,10 @@ def create_app(path: str | Path | None = None) -> FastAPI:
     @app.get("/quality/coverage")
     def coverage(as_of: datetime):
         return quality.coverage(as_of=as_of)
+
+    @app.get("/quality/problems")
+    def problem_reconciliation(as_of: datetime):
+        return quality.problem_reconciliation(as_of=as_of)
 
     @app.get("/exports/cases")
     def export_cases(after: int = 0, limit: int = 100, district: str | None = None,

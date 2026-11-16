@@ -13,6 +13,7 @@ CASE_COLUMNS = (
     "case_id", "source", "external_id", "grid_id", "district", "category",
     "priority", "accepted_at", "department", "status", "resolution",
     "first_response_at", "response_due", "resolution_due", "version",
+    "problem_id",
 )
 
 class ExportService:
@@ -43,7 +44,13 @@ class ExportService:
             watermark = self.store.watermark(db)
             source = self.store.case_list(db, district=district, category=category,
                                           after=after, limit=limit)
-            rows = [{key: item[key] for key in CASE_COLUMNS} for item in source]
+            state = self.store.membership_state(db)
+            rows = []
+            for item in source:
+                member = state.get(item["case_id"])
+                rows.append({key: item[key] for key in CASE_COLUMNS
+                             if key != "problem_id"} |
+                            {"problem_id": member["problem_id"] if member else None})
             cursor = rows[-1]["case_id"] if rows else None
             return {"watermark": watermark, "next_cursor": cursor,
                     "count": len(rows), "format": fmt,

@@ -84,6 +84,8 @@ class CaseService:
     def get(self, case_id: int, *, history: bool = False) -> dict:
         with self.store.connection() as db:
             case = self.store.case(db, case_id)
+            membership = self.store.current_membership(db, case_id)
+            case["problem_id"] = membership["problem_id"] if membership else None
             if history:
                 case["events"] = self.store.events(db, case_id)
             return case
@@ -93,6 +95,10 @@ class CaseService:
         with self.store.connection() as db:
             items = self.store.case_list(db, district=district, category=category,
                                          status=status, after=after, limit=limit)
+            state = self.store.membership_state(db)
+            for item in items:
+                member = state.get(item["case_id"])
+                item["problem_id"] = member["problem_id"] if member else None
             return {"items": items, "next_cursor": items[-1]["case_id"] if items else None,
                     "watermark": self.store.watermark(db)}
 

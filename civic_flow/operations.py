@@ -35,6 +35,7 @@ class OperationsService:
                                 "grid_id": base["grid_id"], "district": base["district"],
                                 "category": base["category"], "department": item["department"],
                                 "priority": base["priority"], "status": item["status"],
+                                "problem_id": item.get("problem_id"),
                                 "accepted_at": base["accepted_at"],
                                 "response_due": base["response_due"],
                                 "resolution_due": base["resolution_due"],
